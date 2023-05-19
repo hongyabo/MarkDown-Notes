@@ -226,9 +226,9 @@ int fstat(int fd, struct stat *buf); //文件描述词 stat结构体指针
 
 ### 文件映射
 
-mman映射磁盘文件至用户态缓冲(实际上只是映射到用户态缓冲同一物理地址，虚拟地址不同，以为自己在用户态，实际上用的是内核中的文件对象)
+mmap映射磁盘文件至用户态缓冲(实际上只是映射到用户态缓冲同一物理地址，虚拟地址不同，以为自己在用户态，实际上用的是内核中的文件对象)
 
-munman关闭映射
+munmap关闭映射
 
 使用lseek获取文件长度时要将其回到开头
 
@@ -480,13 +480,13 @@ pid_t waitpid(pid_t pid, int *stat_loc, int options);//pid为-1则等待任意�
 
 ## 进程终止
 
-| 终止方式                             | 终止情况                           |
-| ------------------------------------ | ---------------------------------- |
-| main函数调用return                   | 正常                               |
-| 调用exit函数 (任意函数)              | 正常                               |
-| 调用Exit函数或者exit函数  (任意函数) | 正常，**但不刷新用户态FILE流缓冲** |
-| 调用abort函数(自我放弃)              | 异常                               |
-| 接受到能引起进程终止的信号           | 异常                               |
+| 终止方式                                 | 终止情况                           |
+| ---------------------------------------- | ---------------------------------- |
+| main函数调用return                       | 正常                               |
+| 调用exit函数 (任意函数)                  | 正常                               |
+| 调用\_Exit函数或者\_exit函数  (任意函数) | 正常，**但不刷新用户态FILE流缓冲** |
+| 调用abort函数(自我放弃)                  | 异常                               |
+| 接受到能引起进程终止的信号               | 异常                               |
 
 ```shell
 echo $?  获取上一次进程的退出状态码
@@ -568,7 +568,7 @@ inter processes communication
 有名管道：任意进程间使用
 
 ```c
-int mkfifo(const char *pathname, mode_t mode);
+int mkfifo(const char *pathname, mode_t mode);//在外部创建一个pipe文件，后续还是使用open打开
 #include <unistd.h>
 int unlink(const char *path);
 ```
@@ -620,7 +620,7 @@ sighandler_t signal(int signum, sighandler_t handler);//将signum信号的递送
 
 * 一次修改，永久生效，注册只能修改当前进程的信号递送行为(单个进程)
 * 递送信号x时，屏蔽信号x
-* 递送完成**自动重启**低速系统调用
+* 递送完成**自动重启**低速系统调用(会阻塞的那些)
 * 递送行为可以改为默认、忽略、自定函数
 * bash进程会注册SIGINT信 号，这样当从键盘输入中断时，bash进程不会终止了。
 
@@ -661,7 +661,7 @@ void (*sa_restorer)(void);
 * SA_NODEFER 不屏蔽递送中的信号
 * SA_RESETHAND 递送一次后递送行为回到默认
 
-**s_mask:**
+**s_mask:**设置信号执行中额外屏蔽的信号
 
 ```c
 int sigemptyset(sigset_t *set);//初始化信号集，全置0
@@ -753,7 +753,7 @@ int shmctl(int shmid, int cmd, struct shmid_ds *buf);//管理
 
 参数key的取值是宏IPC_PRIVATE,则为私有共享内存，只能亲属进程共享
 
-* 进程每次执行都会创建一个私有共享内存
+* 进程每次执行都会创建一个ID不同的私有共享内存(如果不删除)
 
 **竞争状态**
 
@@ -781,10 +781,13 @@ int shmctl(int shmid, int cmd, struct shmid_ds *buf);//管理
 * man 7 pthreads
 * 链接时需要加 -pthread 选项，链接pthread动态库
 * 线程报错不能用perror，errno可能形成竞争条件
+* **多线程不适应与信号机制一起使用**
 
+缓冲区
 
-
-
+**多线程并发执行**
+printf 和 scanf 自带锁，在其写入写出 ( ) 内数据时不会切换线程，即不会导致写括号内数据一半换成其他的
+printf 和 scanf 为行缓冲，不带\n时，数据只存在于流缓冲中，未写入文件对象(会导致未带换行符的不同pfsf数据混到一起(以一次输入输出为单位，内部正常，外部无序))
 
 ## 线程创建
 
@@ -797,7 +800,570 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_
 
 main主线程终止，则进程终止，则所有子线程终止
 
+```shell
+ps -elLf   //列出所有线程
+```
 
+**线程内数据共享：**
+
+* 全局变量
+
+* 堆区
+
+* 各自栈区数据(**非main线程栈区数据传递可能会有悬空指针问题**)
+
+* 通过pthread_create参数，可以传指针(传入传出参数,上述数据)，或者long字面值(仅传值)
+
+* void* 和 long
+
+  <img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230509092359389.png" alt="image-20230509092359389" style="zoom:80%;" />
+
+## 线程终止
+
+```c
+pthread_join(tid,void ** retval); //获取线程退出状态,线程返回值是void*
+```
+
+线程主动退出的两种方式：
+
+1. pthread_exit，类exit，但只终止线程，并且不清空缓冲区，线程中exit也会终止进程
+2. return 
+
+被动退出：
+
+1. 线程取消cancel
+
+
+
+### 线程取消
+
+```c
+int pthread_cancel(pthread_t thread);
+void pthread_testcancel(void);//手动添加取消点
+```
+
+线程收到取消信号后，执行至取消点才终止
+
+取消点：几乎所有引发阻塞的函数，文件函数 man 7 pthreads
+
+
+线程取消引发的问题：申请资源清理问题
+
+### 线程取消的资源清理函数
+
+```c
+void pthread_cleanup_push(void (*routine)(void *),void *arg);
+void pthread_cleanup_pop(int execute);
+```
+
+pthread_cleanup_push 负责将清理函数压入一个栈中，这个栈会在下列情况下弹出： 
+
+* 线程因为取消而终止时，所有清理函数按照后进先出的顺序从栈中弹出并执行。 
+* 线程调用 pthread_exit 而主动终止时，所有清理函数按照后进先出的顺序从栈中弹出并执行。 
+* 线程调用 pthread_clean_pop 并且 execute 参数非0时，弹出栈顶的清理函数并执行。 
+* 线程调用 pthread_clean_pop 并且 execute 参数为0时，弹出栈顶的清理函数不执行。 
+* 值得特别注意的是：当线程在 start_routine 中执行**return**语句而终止的时候，清理函数**不会弹栈**！
+
+## 线程互斥
+
+锁
+
+```c
+int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexattr);//动态初始化
+int pthread_mutex_destroy(pthread_mutex_t *mutex);
+int pthread_mutex_lock(pthread_mutex_t *mutex);
+int pthread_mutex_unlock(pthread_mutex_t *mutex);
+int pthread_mutex_trylock(pthread_mutex_t *mutex);//不阻塞加锁，不成功则立即返回
+```
+
+为什么要临界区越小越好：饥饿问题
+
+### 死锁
+
+1. 循环等待死锁——调整资源获取顺序 / trylock
+2. 持有锁进程，在有锁状态终止——终止前解锁 / 将解锁写入清理函数
+3. 有锁情况下，再次加同一把锁——不重复加锁 / 检错锁 / 可重入锁
+
+trylock 非阻塞加锁，若未锁，则加锁；若已锁，则返回，常与while搭配使用
+trylock可解决第一种死锁
+
+自旋锁——pthread_spin_  不满足条件，死循环
+读写锁——读者写者问题，
+
+锁的类型
+
+```c
+int pthread_mutexattr_gettype(const pthread_mutexattr_t *restrict attr, int *restrict type);
+int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type);
+```
+
+锁类型：普通锁(默认)，检测锁，递归/可重入锁
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230503221319860.png" alt="image-20230503221319860" style="zoom:80%;" />
+
+检错锁：多次加锁会报错,会解锁再加锁，可以运行
+
+可重入锁：多次加锁，引用计数增加，其他线程还是会阻塞
+
+## 线程同步
+
+flag：事件能否运行的条件
+
+**使用互斥锁**：循环检查
+
+**条件变量**(无竞争 的线程间同步(不会死循环检查))——配合锁与flag(可能是size，num等值)使用
+
+
+
+```c
+pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+int pthread_cond_init(pthread_cond_t *cond, pthread_condattr_t *cond_attr);
+int pthread_cond_signal(pthread_cond_t *cond);//通知
+int pthread_cond_broadcast(pthread_cond_t *cond);//广播
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex);.//等待
+int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime);//限时等待
+int pthread_cond_destroy(pthread_cond_t *cond);
+```
+
+wait的原理：
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230503222545863.png" alt="image-20230503222545863" style="zoom:80%;" />
+
+虚假唤醒: **使用 while 判断**
+
+* 使用 broadcast 时，唤醒全部wait，都会执行后续操作，但资源并不够
+* 同类线程使用同一标志时，singal唤醒的wait加锁前被同类进程抢占，直接执行完，后续wait抢占时不会再次检查资源
+
+```c
+while(flag > 0)//若真唤醒，重新检查会弹出；若虚假唤醒，会重新wait
+{
+    wait(xxxxx);
+}
+```
+
+## 线程属性
+
+setdetach :detach(不可合并，即不能被join)， join(可合并)
+
+## 线程安全
+
+可重入性：函数执行过程中再次调用自己，递归，多线程，信号
+若多次调用彼此无影响则是可重入，否则非可重入
+
+ctime_r:若函数有_r版本，则代表无r版本是线程不安全的(ctime使用同一片数据区，多线程会互相覆盖)
+返回值为指针的函数才可能有线程不安全，堆空间一般无该问题
+
+线程安全
+
+* 使用栈上的数据
+* 使用可重入函数
+* 使用非栈数据记得加锁
+* 减少使用全局，static数据
+
+# 网络编程
+
+## socket套接字
+
+```c
+//man 7 ip
+struct sockaddr_in {//ipv4  ipv6为sockaddr_in6
+sa_family_t sin_family; /* address family: AF_INET */
+in_port_t sin_port; /* port in network byte order */
+struct in_addr sin_addr; /* internet address */
+};
+/* Internet address. */
+struct in_addr {
+uint32_t s_addr; /* address in network byte order */ //ipv4
+};
+```
+
+struct sockaddr是一种通用的地址结构，它可 以描述一个IPv4或者IPv6的结构，所有涉及到地址的接口都使用了该类型的参数，但是过于 通用的结果是直接用它来描述一个具体的IP地址和端口号十分困难。所以用户一般**先使用 struct sockaddr_in**来构造地址，再将其进行**强制类型转换成struct sockaddr**以作为网 络接口的参数。
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230510135855559.png" alt="image-20230510135855559" style="zoom:80%;" />
+
+## 主机字节序与网络字节序 
+
+主机字节序：x86小端，ARM可大可小
+
+网络字节序：网络设备，大端
+
+man INET
+
+```c
+#include <arpa/inet.h>
+//h --> host n --> net l --> 32bit s --> 16bit
+uint32_t htonl(uint32_t hostlong);//主机long字节序变netlong字节序
+uint16_t htons(uint16_t hostshort);
+uint32_t ntohl(uint32_t netlong);
+uint16_t ntohs(uint16_t netshort);
+```
+
+利用char *p = (char *) & i;查看该int值是大端还是小端 (看第一个字节数据)
+
+## IP地址转换
+
+```c
+int inet_aton(const char *cp, struct in_addr *inp);//点分十进制换32bit int大端(网络字节序)	
+int_addr_t inet_addr(const char *cp);//点分十进制换32bit int大端(网络字节序)
+char *inet_ntoa(struct in_addr in);//32bit大端换点分十进制
+//线程安全版本是inet_atop 、inet_ptoa
+```
+
+## 域名
+
+* 查host文件：cat /etc/hosts
+* DNS协议:查看主机DNS协议
+* nslookup命令:nslookup www.baidu.com
+* 系统调用：
+
+```c
+struct hostent *gethostbyname(const char *name);//底层使用了DNS，断网不可用
+struct hostent {
+char *h_name; /* official name of host
+*/
+char **h_aliases; /* alias list */
+int h_addrtype; /* host address type */
+int h_length; /* length of address */
+char **h_addr_list; /* list of addresses *///指针数组，每一项是一个指针，指向一个ip地址(二进制网络字节序)
+}
+```
+
+* 此函数报错使用**herror**，(h_errno)
+* h_addr_list为指针数组，其指向的是二进制的地址(而非点分十进制),网络字节序
+
+MSS:保证不触发分片的大小
+
+## TCP 通信
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230509084826224.png" alt="image-20230509084826224" style="zoom:80%;" />
+
+```c
+int socket(int domain, int type, int protocol);
+//domain AF_INET --> IPv4 AF_INET6 --> IPv6
+//type SOCK_STREAM --> TCP SOCK_DGRAM --> UDP
+//protocol IPPROTO_TCP --> TCP IPPROTO_UDP -->UDP
+int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+int listen(int sockfd, int backlog);
+int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);//长度要初始化
+ssize_t send(int sockfd, const void *buf, size_t len, int flags);
+ssize_t recv(int sockfd, void *buf, size_t len, int flags);
+int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);//更改socket属性
+```
+
+* socket创建文件对象，内含一个输入缓冲和一个输出缓冲
+* connect发送第一次握手，(也可看做去完成了三次握手，具体由os实现)
+* bind用于给socket对象赋予一个本地协议地址（即IP地址加端口号），(服务器必须要用，ip只能是本机ip)
+* 只要客户端端口号随机，timewait意义不大，设置socket属性，SO_REUSEADDR，可无视timewait
+     <img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230510143808405.png" alt="image-20230510143808405" style="zoom:80%;" />
+* listen会将socket中的缓冲区改为两个队列，半连接(有第一次握手)，全连接(完成三次握手)，**listen允许os对一次握手进行返回二次握手**
+* accept，在全连接队列中取出一个，返回值为新的文件对象fd，该fd中有一个输入缓冲和一个输出缓冲(socket)
+* 服务器bind 的ip地址：192.168.118.128 1234 //外网可访问
+  	                                 127.0.0.1 1234 //外网不可访问
+                                       0.0.0.0  1234 //外网可访问，同192
+* 客户端多次bind会导致同一连接多次建立，TCP最后的timewait
+* DDOS攻击，只发送第一次连接，使得半连接满了
+* send / recv 只是实现文件对象与用户态缓存中的数据copy，具体什么时候发送接收，由os内核协议栈实现
+* send / recv 是特殊的write read
+* TCP是一种流式协议，send和recv不是一一对应，tcp数据无边界
+
+**tcpdump**
+
+wireshark:Ncap抓包，wireshark分析
+
+linux抓包：
+				1. su 切换到root
+				1. tcpdump (-i 指定网卡)(-i any 任意)(-w 保存文件，cap文件)(-n 显示完全的ip地址)
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230509090308073.png" alt="image-20230509090308073" style="zoom:80%;" />
+
+**解决网络问题的一般流程**
+
+1. netstat 观察连接状态， netstat -an，netstat -ntlp 只显示监听进程
+2. tcpdump抓包，-w保存
+3. wireshark打开抓包数据进行分析
+
+
+
+## UDP通信
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230509091402184.png" alt="image-20230509091402184" style="zoom:80%;" />
+
+```c
+ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen);
+ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,struct sockaddr *src_addr, socklen_t *addrlen);//长度要初始化
+```
+
+
+
+* tcp udp 可以bind同一端口
+* socket使用SOCK_DGRAM
+* 使用recvfrom、sendto，必须客户端先sendto，服务端先recvfrom
+* udp消息有边界，
+* 聊天终止必须手动终止(向服务端发送一个长度0消息)
+
+## epoll 
+
+man 7 epoll
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230509210800646.png" alt="image-20230509210800646" style="zoom:80%;" />
+
+* 采用文件对象；select监听与就绪耦合
+* 监听集合使用红黑树，大小无限制；select fdset为1024，扩容不方便
+* 监听和就绪分离；select每次都要重新将fdset拷贝内核
+* 遍历就绪集合；select遍历监听集合(只是就绪的位为1)
+
+```c
+int epoll_create(int size);
+int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout);//-1永久等待
+typedef union epoll_data {
+	void *ptr;
+	int fd;
+	uint32_t u32;
+uint64_t u64;
+} epoll_data_t;
+struct epoll_event {
+	uint32_t events; /* Epoll events */
+	epoll_data_t data; /* User data variable */
+};
+```
+
+**阻塞与非阻塞**
+
+* read磁盘文件不会阻塞
+* read管道、stdin；read/recv socket会阻塞
+
+**阻塞改为非阻塞**
+
+```c
+int fcntl(int fd, int cmd, .../* args */);//永久非阻塞
+cmd: F_GETFL(void)   F_SETFL(int)
+recv(sockfd, buf, sizeof(buf), MSG_DONTWAIT);//临时阻塞
+```
+
+通过getfl获取已打开的描述符fd的属性，修改其属性(或上O_NONBLOCK)，再setfl回去
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230509211715315.png" alt="image-20230509211715315" style="zoom:80%;" />
+
+* 非阻塞无数据时返回-1
+* 遇到EOF,返回0
+
+**IO模型**
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230509211826779.png" alt="image-20230509211826779" style="zoom:80%;" />
+
+**边缘触发与水平触发**
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230509211942081.png" alt="image-20230509211942081" style="zoom:80%;" />
+
+水平触发：只要读缓冲区有数据，就会读就绪(epoll默认水平触发)
+
+边缘触发：只有读缓冲区增加数据时会读就绪(可能读不完)，不增加时即使有数据也不会就绪
+
+epoll默认水平触发，增加边缘触发属性
+```c
+event.events = EPOLLIN | EPOLLET;//增加边缘触发属性
+```
+
+# 进程池线程池
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230509212313604.png" alt="image-20230509212313604" style="zoom:80%;" />
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230509212355130.png" alt="image-20230509212355130" style="zoom:80%;" />
+
+池(poll):申请大量资源，使用时只转移使用权，不回收，避免了切换开销，全部做完再回收
+
+![image-20230510105035360](E:\CS\markdown notes\学习笔记\Linux.assets\image-20230510105035360.png)
+
+## 进程池
+
+
+
+**进程池：**
+客户——>服务器父进程——>子进程
+进程池——>分配任务——>需要跨进程传递文件对象——>sendmsg、recvmsg——>需要利用socket对象传递——>socketpair(本地套接字、socket管道)
+父进程共享文件对象给子进程：sendmsg、recvmsg
+父进程分配任务给子进程：epoll、sendmsg、
+父子进程通信：子进程状态转换；socketpair、
+进程有序退出：异步拉起同步；信号+epoll+sendmsg(正文标记)
+子进程工作：
+
+问题：
+
+1. 客户端G——>服务端G(子进程写，客户端读，读端G，写端SIGPIPE)
+2. 粘包:流式协议无边界——火车
+3. 半包：网络质量速度等问题——recvn或者waitall
+4. 文件校验：md5sum ( vimdiff 只适用于文本文件)
+
+调优：(注意性能瓶颈在哪里)
+零拷贝：trancate+mmap、sendfile
+文件内容：大火车
+进度条：与大火车相斥
+
+man CMSG
+
+```c
+//					父子进程共享文件对象
+//-----------------------------------------------------------------------------------------------------------
+ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags);//在套接字间传递数据
+ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
+
+int socketpair(int domain, int type, int protocol, int sv[2]);//创建本地套接字，数组中每一个都是一个socket，有读写
+
+struct msghdr
+{
+	void *msg_name; /* optional address */					//前两个填0
+	socklen_t msg_namelen; /* size of address */
+    struct iovec *msg_iov; /* scatter/gather array */		//正文字段，数组，暂时无用，但要传
+	size_t msg_iovlen; /* # elements in msg_iov */			//数组有几个元素
+	void *msg_control; /* ancillary data, see below */ 	//控制字段，可以用来传文件描述符，存储struct cmsghdr类型的地址(申请在堆上)
+	size_t msg_controllen; /* ancillary data buffer len */
+	int msg_flags; /* flags on received message */
+};
+struct iovec
+{ /* Scatter/gather array items */
+	void *iov_base; /* Starting address */
+	size_t iov_len; /* Number of bytes to transfer */
+};
+size_t CMSG_LEN(size_t length);//根据结构体最后一个数组大小确定结构体大小
+unsigned char *CMSG_DATA(struct cmsghdr *cmsg);//已知结构体起始地址，算出结构体最后一个数组地址
+
+struct cmsghdr {//申请在堆上
+               size_t cmsg_len;    /* Data byte count, including header 	//填结构体长度。CSMG_LEN
+                                      (type is socklen_t in POSIX) */
+               int    cmsg_level;  /* Originating protocol */           	//填SOL_SOCKET
+               int    cmsg_type;   /* Protocol-specific type */          	//SCM_RIGHTS
+           /* followed by					
+              unsigned char cmsg_data[]; */								//CSMG_DATA 找到data[]地址，解引用赋值fd		
+           };
+
+//零拷贝
+ssize_t sendfile(int out_fd, int in_fd, off_t *offset, size_t count);//in是磁盘文件，fd随意 ，一般为网络文件
+```
+
+* sendmsg 需要 **msghdr** 数据结构；**msghdr** 中的 contronl 需要填 **cmsghdr** 类型地址(只能申请在堆上)
+
+# 线程池
+
+优势：传递文件描述符只需传递一个整数
+注意：互斥锁(mutex)、(同步)cond
+
+问题：
+
+1. pthread_cancel与cond_wait同时存在，(wait 是取消点)，走到wait时线程终止，但是未解锁，需要用资源清理函数解锁
+2. cancel中的push,pop是宏，有花括号，要成对出现，所以push和pop内部变量只在其间作用域，若后续要用，需要在push前声明
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230514143703765.png" alt="image-20230514143703765" style="zoom:80%;" />
+
+
+
+## 目录系统
+
+实际目录，虚拟目录；栈；
+
+## 加密：
+
+/etc/shadow 下的盐值和密文
+
+```c
+char *crypt(const char *key, const char *salt);//给出明文和盐值，返回密文
+struct spwd *getspnam(const char *name);//root下调用，获取用户密文密码
+struct spwd{
+    char *sp_name;//登录名
+    char *sp_pwdp;//密文密码
+}
+```
+
+## 日志
+
+写一个宏实现日志：LOG_OPERATION
+syslog(),操作系统的日志文件存储在/var/log/messages中
+
+## C库的一些宏
+
+```c
+__LINE__ 	//当前行号
+__FUNCTION__ //当前函数名
+__FILE__	//当前文件名
+```
+
+## md5
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230514133243234.png" alt="image-20230514133243234" style="zoom:80%;" />
+
+* openssl库
+* 或者使用他人写好的库
+
+## 
+
+## 连接数据库
+
+```c
+MYSQL * mysql_init(MYSQL *mysql);	//为MySQL连接分配资源，参数一般填NULL，互斥访问
+//数据结构MYSQL是操作资源的句柄
+void mysql_close(MYSQL *mysql);		//关闭MYSQL连接
+MYSQL *mysql_real_connect(MYSQL *mysql, const char *host, const char *user, const char *passwd, const char *db, unsigned int port, const char *unix_socket, unsigned long client_flag);//连接到MySQL服务端，必须互斥访问
+//一般的参数
+// host -> "localhost" user -> "root" passwd-> 密码 db->数据库名
+// 其余参数选择默认 port -> 0 unix_socket -> NULL client_flag -> 0
+// 如果出现报错，返回值为NULL，使用mysql_error函数可以获取报错原因
+
+int mysql_query(MYSQL *mysql, const char *stmt_str);
+// 执行SQL语句，stmt_str -> SQL语句的内容 不需要加分号
+
+MYSQL_RES *mysql_store_result(MYSQL *mysql)//获取结果，每一次读sql之后就要使用，否则报错
+// 在mysql_query之后调用，假如执行的SQL语句会得到结果，需要使用该函数将结果存入数据结构MYSQL_RES当中
+void mysql_free_result(MYSQL_RES *result);// 释放数据结构MYSQL_RES占据的内存空间
+my_ulonglong mysql_num_rows(MYSQL_RES *result);// SQL语句结果的行数
+unsigned int mysql_num_fields(MYSQL_RES *result);// SQL语句结果的列数
+MYSQL_ROW mysql_fetch_row(MYSQL_RES *result);// 从结果当中取出一行，row[0]就是一行结果，字符串
+
+```
+
+* 每一次读sql(查询)后，必须用store接收，否则报错
+* init 和 connect 要放入临界区保护
+
+
+
+
+
+## 有状态与无状态
+
+**长连接：**用户登录后一直处于连接状态，直到做完所有任务退出(不管用户有没有请求)
+
+优点：性能好
+
+缺点：并发性能差，可能导致饥饿
+
+**短连接：**用户每次请求结束就断开连接，下一次请求时重新连接
+
+优点：并发性能好
+
+缺点：同一个用户的多次请求，可能分配给不同线程，会导致用户相关信息维护的困难
+
+凭证系统：用户登录后每次请求都要携带凭证
+
+有状态：session 会话，服务端有一张用户凭证表，记录了用户及其凭证； 不支持水平扩展(增加服务端机器数量来提高并发能力)
+
+无状态：用户登录时，服务端会根据用户名和其他数据生成密文，后续每次请求都要携带这些信息和密文(token)
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230517094426727.png" alt="image-20230517094426727" style="zoom:80%;" />
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230517094440586.png" alt="image-20230517094440586" style="zoom:80%;" />
+
+**token**
+
+JWT token生成
+
+github
+
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230517094826030.png" alt="image-20230517094826030" style="zoom:80%;" />
+
+**长短命令分离**
+
+将cd、ls等短命令由主线程执行，上传下载等长命令由子线程验证token后处理 
+存在的长连接：用户和主线程、用户上传下载和子线程
+
+长连接需要占用资源——>超时退出
+<img src="E:\CS\markdown notes\学习笔记\Linux.assets\image-20230517095535371.png" alt="image-20230517095535371" style="zoom:80%;" />
 
 # 杂项
 
@@ -819,5 +1385,28 @@ main主线程终止，则进程终止，则所有子线程终止
 * ctrl + \ 是三号信号 quit
 * atoi库函数，将数字字符串转int，如果非有效转换，返回0
 * perf 、epbf 性能分析工具， 性能测试，火焰图，找到粗壮顶峰(平坦的)进行优化
-* 
+* 面试问题——放入相应场景——分析——联系已学知识——解决方案
+* mmap的flag要跟open fd时的参数一样
+* open的flag TRUNC (文件存在则截为0)
+* 定义结构体：其成员为指针的话，一定要分配内存
+* strtok(),从字符串中提取信息
+* access判断文件是否存在或者对文件是否
+
+# 面试
+
+**进程池**
+
+
+
+问题：
+客户端G——>服务端G(子进程写，客户端读，读端G，写端SIGPIPE)——MSG_NOSIGNAL
+粘包:	流式协议无边界——火车
+半包：	网络质量速度等问题，当一次没发完，接收端只接受缓冲区的，下一次获取length就是错的，——recvn或者WAIT_ALL
+文件校验：md5sum ( vimdiff 只适用于文本文件)
+进程有序退出：异步拉起同步；信号+epoll+sendmsg(正文标记)
+
+调优：(注意性能瓶颈在哪里)(perf 、epbf 性能分析工具， 性能测试，火焰图，找到粗壮顶峰(平坦的)进行优化)
+零拷贝：trancate+mmap、sendfile
+文件内容：大火车
+进度条：与大火车相斥
 
